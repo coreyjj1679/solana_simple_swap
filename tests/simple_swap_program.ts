@@ -66,7 +66,7 @@ describe("simple_swap_program", () => {
     );
   });
 
-  it("[deposit] shd not allow non-admin signer to deposit", async () => {
+  it("[deposit] shd fail from non-admin signer", async () => {
     try {
       const random_dude = anchor.web3.Keypair.generate();
       await program.methods
@@ -79,6 +79,83 @@ describe("simple_swap_program", () => {
         .rpc();
     } catch (err) {
       expect((err as anchor.AnchorError).error.errorCode.number).to.equal(6000);
+    }
+  });
+
+  it("[deposit] shd fail invalid deposit amount", async () => {
+    try {
+      await program.methods
+        .depositSol(new anchor.BN(0))
+        .accounts({
+          vault: vault.publicKey,
+          signer: admin.publicKey,
+        })
+        .signers([admin])
+        .rpc();
+    } catch (err) {
+      expect((err as anchor.AnchorError).error.errorCode.number).to.equal(6001);
+    }
+  });
+
+  it("[withdraw] simple withdraw", async () => {
+    const depositAmount = new anchor.BN(10_000);
+    const vaultBalBefore = await provider.connection.getBalance(
+      vault.publicKey
+    );
+    await program.methods
+      .depositSol(depositAmount)
+      .accounts({
+        vault: vault.publicKey,
+        signer: admin.publicKey,
+      })
+      .signers([admin])
+      .rpc();
+
+    await program.methods
+      .withdrawSol(depositAmount)
+      .accounts({
+        vault: vault.publicKey,
+        signer: admin.publicKey,
+      })
+      .signers([admin])
+      .rpc();
+
+    const vaultBalAfter = await provider.connection.getBalance(vault.publicKey);
+    assert.equal(
+      vaultBalAfter - vaultBalBefore,
+      0,
+      "Vault balance does not match."
+    );
+  });
+
+  it("[withdraw] shd fail when amount exceed balance", async () => {
+    try {
+      // deposit 10K
+      const depositAmount = new anchor.BN(10_000);
+      await program.methods
+        .depositSol(depositAmount)
+        .accounts({
+          vault: vault.publicKey,
+          signer: admin.publicKey,
+        })
+        .signers([admin])
+        .rpc();
+
+      const vaultBalBefore = await provider.connection.getBalance(
+        vault.publicKey
+      );
+      const invalidAmount = new anchor.BN(vaultBalBefore + 1);
+      // withdraw with a slightly higher amount
+      await program.methods
+        .withdrawSol(invalidAmount)
+        .accounts({
+          vault: vault.publicKey,
+          signer: admin.publicKey,
+        })
+        .signers([admin])
+        .rpc();
+    } catch (err) {
+      expect((err as anchor.AnchorError).error.errorCode.number).to.equal(6002);
     }
   });
 });

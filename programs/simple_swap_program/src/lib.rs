@@ -24,6 +24,8 @@ pub mod simple_swap_program {
             ErrorCode::Unauthorized
         );
 
+        require!(amount > 0, ErrorCode::InvalidAmount);
+
         let cpi_context = CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
             Transfer {
@@ -33,6 +35,31 @@ pub mod simple_swap_program {
         );
 
         transfer(cpi_context, amount)?;
+        Ok(())
+    }
+
+    pub fn withdraw_sol(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+        // only admin is able withdraw
+        require!(
+            ctx.accounts.signer.key() == ctx.accounts.vault.authority,
+            ErrorCode::Unauthorized
+        );
+        require!(amount > 0, ErrorCode::InvalidAmount);
+
+        let vault_balance = **ctx.accounts.vault.to_account_info().try_borrow_lamports()?;
+        // ensure vault has enough SOL
+        require!(vault_balance >= amount, ErrorCode::InsufficientFunds);
+
+        **ctx
+            .accounts
+            .vault
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= amount;
+        **ctx
+            .accounts
+            .signer
+            .to_account_info()
+            .try_borrow_mut_lamports()? += amount;
         Ok(())
     }
 }
@@ -54,6 +81,14 @@ pub struct Deposit<'info> {
     pub system_program: Program<'info, System>, // Required for SOL transfers
 }
 
+#[derive(Accounts)]
+pub struct Withdraw<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>, // Signer account for withdrawals
+    #[account(mut)]
+    pub vault: Account<'info, Vault>, // Mutable vault account
+    pub system_program: Program<'info, System>, // Required for SOL transfers
+}
 #[account]
 pub struct Vault {
     pub authority: Pubkey, // Admin authority
@@ -63,4 +98,8 @@ pub struct Vault {
 pub enum ErrorCode {
     #[msg("Unauthorized access.")]
     Unauthorized,
+    #[msg("Invalid amount.")]
+    InvalidAmount,
+    #[msg("Insufficient funds in vault.")]
+    InsufficientFunds,
 }

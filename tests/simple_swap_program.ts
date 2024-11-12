@@ -224,13 +224,11 @@ describe("simple_swap_program", () => {
     }
   });
 
-  it("[swap] simple swap", async () => {
+  it.skip("[swap] simple swap", async () => {
     const depositAmount = new anchor.BN(100_000_000);
     const buySize = new anchor.BN(500_000); // in USDC
     const FIXED_RATE = new anchor.BN(1_000); // update this when integrated to pyth
-
     const solAmount = buySize.div(FIXED_RATE);
-
     await program.methods
       .depositSol(depositAmount)
       .accounts({

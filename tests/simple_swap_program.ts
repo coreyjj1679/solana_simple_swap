@@ -2,6 +2,47 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { SimpleSwapProgram } from "../target/types/simple_swap_program";
 import { assert, expect } from "chai";
+import {
+  createAssociatedTokenAccount,
+  createMint,
+  getOrCreateAssociatedTokenAccount,
+  mintTo,
+} from "@solana/spl-token";
+
+export async function createAndMint(
+  provider: anchor.Provider,
+  payer: anchor.web3.Keypair,
+  owner: anchor.web3.PublicKey,
+  mint_dest: anchor.web3.Keypair,
+  amount: number
+) {
+  const mint = await createMint(
+    provider.connection,
+    payer,
+    payer.publicKey,
+    null,
+    9
+  );
+
+  const tokenAccount = await createAssociatedTokenAccount(
+    provider.connection,
+    payer,
+    mint,
+    mint_dest.publicKey
+  );
+
+  await mintTo(
+    provider.connection,
+    payer,
+    mint,
+    tokenAccount,
+    owner,
+    amount, // because decimals for the mint are set to 9
+    [payer]
+  );
+
+  return mint;
+}
 
 describe("simple_swap_program", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -11,14 +52,19 @@ describe("simple_swap_program", () => {
 
   let admin: anchor.web3.Keypair;
   let vault: anchor.web3.Keypair;
+  let vaultUSDC: anchor.web3.Keypair;
+
+  let usdcMint: anchor.web3.PublicKey;
+
   let provider: anchor.Provider;
 
   beforeEach(async () => {
+    provider = anchor.getProvider();
     admin = anchor.web3.Keypair.generate();
     vault = anchor.web3.Keypair.generate();
-    // get SOL for the gas
+    vaultUSDC = anchor.web3.Keypair.generate();
 
-    provider = anchor.getProvider();
+    // get SOL
     await provider.connection.confirmTransaction(
       await provider.connection.requestAirdrop(
         admin.publicKey,
@@ -27,18 +73,36 @@ describe("simple_swap_program", () => {
       "confirmed"
     );
 
+    usdcMint = await createAndMint(
+      provider,
+      admin,
+      admin.publicKey,
+      vaultUSDC,
+      100_000_000
+    );
+
     await program.methods
-      .initialize()
+      .initialize(usdcMint)
       .accounts({
         vault: vault.publicKey,
+        vaultUsdc: vaultUSDC.publicKey,
         admin: admin.publicKey,
       })
-      .signers([admin, vault])
+      .signers([admin, vault, vaultUSDC])
       .rpc();
   });
+
   it("[initialize] shd deploy and set vault auth correctly", async () => {
     const vaultData = await program.account.vault.fetch(vault.publicKey);
+    const valutUsdcData = await program.account.vaultSpl.fetch(
+      vaultUSDC.publicKey
+    );
+
     assert.equal(vaultData.authority.toString(), admin.publicKey.toString());
+    assert.equal(
+      valutUsdcData.authorityUsdc.toString(),
+      admin.publicKey.toString()
+    );
   });
 
   it("[deposit] shd be able to deposit from admin", async () => {
@@ -102,6 +166,7 @@ describe("simple_swap_program", () => {
     const vaultBalBefore = await provider.connection.getBalance(
       vault.publicKey
     );
+
     await program.methods
       .depositSol(depositAmount)
       .accounts({
@@ -157,5 +222,72 @@ describe("simple_swap_program", () => {
     } catch (err) {
       expect((err as anchor.AnchorError).error.errorCode.number).to.equal(6002);
     }
+  });
+
+  it("[swap] simple swap", async () => {
+    const depositAmount = new anchor.BN(100_000_000);
+    const buySize = new anchor.BN(500_000); // in USDC
+    const FIXED_RATE = new anchor.BN(1_000); // update this when integrated to pyth
+
+    const solAmount = buySize.div(FIXED_RATE);
+
+    await program.methods
+      .depositSol(depositAmount)
+      .accounts({
+        vault: vault.publicKey,
+        signer: admin.publicKey,
+      })
+      .signers([admin])
+      .rpc();
+
+    const toATA = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      admin,
+      usdcMint,
+      admin.publicKey
+    );
+
+    // mints 1mil USDC to the signer
+    await mintTo(
+      provider.connection,
+      admin,
+      usdcMint,
+      toATA.address,
+      admin,
+      1_000_000
+    );
+
+    const fromAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      admin,
+      usdcMint,
+      admin.publicKey
+    );
+
+    const buyerSolBalBefore = await provider.connection.getBalance(
+      admin.publicKey
+    );
+    await program.methods
+      .buySol(new anchor.BN(buySize))
+      .accounts({
+        vault: vault.publicKey,
+        vaultUsdc: vaultUSDC.publicKey,
+        signer: admin.publicKey,
+        owner: admin.publicKey,
+        fromAta: fromAta.address,
+        toAta: toATA.address,
+      })
+      .signers([admin])
+      .rpc();
+
+    const buyerSolBalAfter = await provider.connection.getBalance(
+      admin.publicKey
+    );
+
+    assert.equal(
+      buyerSolBalAfter - buyerSolBalBefore,
+      solAmount.toNumber(),
+      "Recevied SOL amount does not match."
+    );
   });
 });
